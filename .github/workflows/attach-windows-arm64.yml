@@ -1,0 +1,58 @@
+name: Attach Windows ARM64 binaries to an existing release
+
+# Adds whisper-{server,cpp}-win32-arm64-cpu.zip to a release that predates the
+# arm64 job, built from that release's own tag. Never re-run build-binaries.yml
+# for an existing tag instead: it rebuilds and replaces every asset, and
+# OpenWhispr pins the CUDA/Vulkan zips' sha256 per tag (whisperCudaManager.js,
+# whisperVulkanManager.js), so already-shipped apps would reject them.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag (e.g. 0.0.10)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release exists and has no win32-arm64 assets yet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          names=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[].name')
+          echo "$names"
+          if echo "$names" | grep -q 'win32-arm64'; then
+            echo "::error::$TAG already has win32-arm64 assets"
+            exit 1
+          fi
+
+  build-windows-arm64-cpu:
+    needs: preflight
+    uses: ./.github/workflows/build-windows-arm64-cpu.yml
+    with:
+      ref: refs/tags/${{ inputs.release_tag }}
+
+  attach:
+    needs: build-windows-arm64-cpu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: whisper-*-win32-arm64-cpu
+          merge-multiple: true
+          path: release
+
+      - name: Upload (no --clobber, so no existing asset can be replaced)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          ls -la release
+          gh release upload "$TAG" release/whisper-server-win32-arm64-cpu.zip release/whisper-cpp-win32-arm64-cpu.zip --repo "$GITHUB_REPOSITORY"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[] | select(.name | contains("win32-arm64")) | "\(.name) \(.size) \(.digest)"'

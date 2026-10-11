@@ -732,8 +732,11 @@ jobs:
           name: whisper-server-win32-x64-vulkan
           path: dist/whisper-server-win32-x64-vulkan.zip
 
+  build-windows-arm64-cpu:
+    uses: ./.github/workflows/build-windows-arm64-cpu.yml
+
   create-release:
-    needs: [build-macos-arm64, build-macos-x64, build-windows-x64-cpu, build-windows-x64-cuda, build-windows-x64-vulkan, build-linux-x64-cpu, build-linux-x64-cuda, build-linux-x64-vulkan]
+    needs: [build-macos-arm64, build-macos-x64, build-windows-x64-cpu, build-windows-x64-cuda, build-windows-x64-vulkan, build-windows-arm64-cpu, build-linux-x64-cpu, build-linux-x64-cuda, build-linux-x64-vulkan]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -748,12 +751,14 @@ jobs:
           mv artifacts/whisper-cpp-darwin-x64/whisper-cpp-darwin-x64.zip release/
           mv artifacts/whisper-cpp-win32-x64-cpu/whisper-cpp-win32-x64-cpu.zip release/
           mv artifacts/whisper-cpp-win32-x64-cuda/whisper-cpp-win32-x64-cuda.zip release/
+          mv artifacts/whisper-cpp-win32-arm64-cpu/whisper-cpp-win32-arm64-cpu.zip release/
           mv artifacts/whisper-cpp-linux-x64-cpu/whisper-cpp-linux-x64-cpu.zip release/
           mv artifacts/whisper-cpp-linux-x64-cuda/whisper-cpp-linux-x64-cuda.zip release/
           mv artifacts/whisper-server-darwin-arm64/whisper-server-darwin-arm64.zip release/
           mv artifacts/whisper-server-darwin-x64/whisper-server-darwin-x64.zip release/
           mv artifacts/whisper-server-win32-x64-cpu/whisper-server-win32-x64-cpu.zip release/
           mv artifacts/whisper-server-win32-x64-cuda/whisper-server-win32-x64-cuda.zip release/
+          mv artifacts/whisper-server-win32-arm64-cpu/whisper-server-win32-arm64-cpu.zip release/
           mv artifacts/whisper-server-linux-x64-cpu/whisper-server-linux-x64-cpu.zip release/
           mv artifacts/whisper-server-linux-x64-cuda/whisper-server-linux-x64-cuda.zip release/
           mv artifacts/whisper-server-win32-x64-vulkan/whisper-server-win32-x64-vulkan.zip release/
@@ -782,12 +787,14 @@ jobs:
             - **Windows x64**: NVIDIA CUDA build (bundled DLLs), Vulkan build (any Vulkan-capable GPU), and CPU build
             - **Linux x64**: NVIDIA CUDA build (current compatible NVIDIA driver; CUDA libraries bundled), Vulkan build (AMD, Intel, or NVIDIA), and CPU build
             - **macOS x64**: CPU only (Intel Macs, requires macOS 13.3+)
+            - **Windows ARM64**: CPU only (clang, armv8.2-a+dotprod+fp16; every Windows 11 ARM64 device)
 
             ## whisper-cli binaries
             - `whisper-cpp-darwin-arm64.zip` - macOS Apple Silicon with Metal
             - `whisper-cpp-darwin-x64.zip` - macOS Intel (CPU only)
             - `whisper-cpp-win32-x64-cpu.zip` - Windows x64 CPU-only
             - `whisper-cpp-win32-x64-cuda.zip` - Windows x64 with CUDA (includes bundled CUDA DLLs)
+            - `whisper-cpp-win32-arm64-cpu.zip` - Windows ARM64 CPU-only
             - `whisper-cpp-linux-x64-cpu.zip` - Linux x64 CPU-only
             - `whisper-cpp-linux-x64-cuda.zip` - Linux x64 with CUDA (current compatible NVIDIA driver; CUDA Toolkit not required)
 
@@ -797,6 +804,7 @@ jobs:
             - `whisper-server-win32-x64-cpu.zip` - Windows x64 CPU-only
             - `whisper-server-win32-x64-cuda.zip` - Windows x64 with CUDA (includes bundled CUDA DLLs)
             - `whisper-server-win32-x64-vulkan.zip` - Windows x64 with Vulkan (uses system Vulkan loader)
+            - `whisper-server-win32-arm64-cpu.zip` - Windows ARM64 CPU-only
             - `whisper-server-linux-x64-cpu.zip` - Linux x64 CPU-only
             - `whisper-server-linux-x64-cuda.zip` - Linux x64 with CUDA (current compatible NVIDIA driver; CUDA Toolkit not required)
             - `whisper-server-linux-x64-vulkan.zip` - Linux x64 with Vulkan (uses system Vulkan loader)
@@ -804,7 +812,7 @@ jobs:
             ## Requirements
             - **Windows CUDA build**: Requires an NVIDIA GPU with a current driver; CUDA and MSVC runtime DLLs are bundled and the CUDA Toolkit is not required.
             - **Windows Vulkan build**: Requires an up-to-date GPU driver that ships the Vulkan runtime (`vulkan-1.dll`). All modern NVIDIA/AMD/Intel drivers include it. MSVC runtime DLLs are bundled.
-            - **Windows CPU build**: No requirements - MSVC runtime DLLs are bundled.
+            - **Windows CPU builds (x64, ARM64)**: No requirements - MSVC runtime DLLs are bundled.
             - **Linux CUDA build**: Requires an NVIDIA GPU with a current compatible driver; CUDA libraries are bundled and the CUDA Toolkit is not required.
             - **Linux Vulkan build**: Requires the system Vulkan loader (`libvulkan.so.1`, typically from the `libvulkan1` package) and a Vulkan-capable GPU driver (Mesa for AMD/Intel, NVIDIA proprietary driver for NVIDIA).
             - **Linux CPU build**: No requirements.

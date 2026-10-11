@@ -1,0 +1,128 @@
+name: Build Windows ARM64 CPU binaries
+
+# Reusable: build-binaries.yml calls it for new releases, and
+# attach-windows-arm64.yml calls it to add the arm64 zips to an existing one.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build (empty = the calling run's commit)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-arm64-cpu:
+    runs-on: windows-11-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup MSVC (native ARM64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          # vcvarsall targets x64 by default, even on an arm64 host
+          arch: arm64
+
+      - name: Check toolchain
+        shell: pwsh
+        run: |
+          # ggml refuses cl.exe for ARM (ggml/src/ggml-cpu/CMakeLists.txt), and
+          # cmake/arm64-windows-llvm.cmake calls plain `clang`: VS's C++ Clang
+          # component, else the image's LLVM.
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            $vsClang = Join-Path $env:VCINSTALLDIR "Tools\Llvm\ARM64\bin"
+            if (-not (Test-Path (Join-Path $vsClang "clang.exe"))) { throw "clang not found" }
+            Add-Content $env:GITHUB_PATH $vsClang
+            $env:PATH = "$vsClang;$env:PATH"
+          }
+          clang --version
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y }
+          ninja --version
+          cmake --version
+          Write-Host "VCToolsRedistDir=$env:VCToolsRedistDir"
+
+      - name: Build whisper.cpp (CPU-only, clang)
+        shell: cmd
+        run: |
+          rem CMAKE_C/CXX_FLAGS replace the toolchain's *_FLAGS_INIT, whose
+          rem -march=armv8.7-a runs only on Snapdragon X and leaves out +fp16
+          rem (f16 math then goes through f32 conversions, about 1.5x slower).
+          rem armv8.2-a+dotprod+fp16 covers every Windows 11 ARM64 CPU and is
+          rem the faster of the two on Snapdragon X. Warning flags as in the toolchain.
+          rem GGML_OPENMP=OFF: clang's libomp140.aarch64.dll is debug_nonredist.
+          set "ARM64_FLAGS=-march=armv8.2-a+dotprod+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -Wno-format -Wno-unused-variable -Wno-unused-function -Wno-gnu-zero-variadic-macro-arguments"
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DCMAKE_TOOLCHAIN_FILE=cmake/arm64-windows-llvm.cmake ^
+            "-DCMAKE_C_FLAGS=%ARM64_FLAGS%" ^
+            "-DCMAKE_CXX_FLAGS=%ARM64_FLAGS%" ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DBUILD_SHARED_LIBS=OFF ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_OPENMP=OFF ^
+            -DGGML_CUDA=OFF ^
+            -DGGML_CCACHE=OFF
+          if errorlevel 1 exit /b 1
+          cmake --build build --config Release --target whisper-cli whisper-server -j %NUMBER_OF_PROCESSORS%
+
+      - name: Package binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\bin\Release\whisper-cli.exe dist\whisper-cpp-win32-arm64-cpu.exe
+          Copy-Item build\bin\Release\whisper-server.exe dist\whisper-server-win32-arm64-cpu.exe
+          # The exes link the dynamic MSVC runtime (CMP0091 stays OLD under
+          # cmake_minimum_required(3.5)), so ship it app-locally like the x64
+          # zips (OpenWhispr CUS-113). Not vcruntime140_1: clang builds don't
+          # import it, and the copy in the arm64 redist folder is ARM64EC (x64 header).
+          $crt = (Get-Item "$env:VCToolsRedistDir\arm64\Microsoft.VC*.CRT" | Select-Object -First 1).FullName
+          if (-not $crt) { throw "arm64 CRT redist not found under $env:VCToolsRedistDir" }
+          $runtimeDlls = @("msvcp140.dll", "vcruntime140.dll")
+          foreach ($dll in $runtimeDlls) { Copy-Item (Join-Path $crt $dll) dist\ }
+          Set-Location dist
+          Compress-Archive -Path (@("whisper-cpp-win32-arm64-cpu.exe") + $runtimeDlls) -DestinationPath whisper-cpp-win32-arm64-cpu.zip
+          Compress-Archive -Path (@("whisper-server-win32-arm64-cpu.exe") + $runtimeDlls) -DestinationPath whisper-server-win32-arm64-cpu.zip
+
+      - name: Verify binaries and zips
+        shell: pwsh
+        run: |
+          $bundled = @("msvcp140.dll", "vcruntime140.dll")
+          foreach ($file in (Get-ChildItem dist\*.exe) + (Get-ChildItem dist\*.dll)) {
+            if ((dumpbin /headers $file.FullName | Out-String) -notmatch 'AA64 machine \(ARM64\)') {
+              throw "$($file.Name) is not ARM64"
+            }
+          }
+          foreach ($exe in Get-ChildItem dist\*.exe) {
+            $deps = dumpbin /dependents $exe.FullName | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLower() }
+            Write-Host "$($exe.Name): $($deps -join ', ')"
+            $unexpected = $deps | Where-Object { $_ -notmatch '^(api-ms-win-|kernel32|advapi32|ws2_32|user32|shell32|ole32)' -and $bundled -notcontains $_ }
+            if ($unexpected) { throw "$($exe.Name) imports unbundled DLLs: $($unexpected -join ', ')" }
+          }
+          & dist\whisper-server-win32-arm64-cpu.exe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "whisper-server --help exited $LASTEXITCODE" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($zip in Get-ChildItem dist\*.zip) {
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
+            $names = $archive.Entries.Name
+            $archive.Dispose()
+            Write-Host "$($zip.Name): $($names -join ', ')"
+            $missing = $bundled | Where-Object { $names -notcontains $_ }
+            if ($missing) { throw "$($zip.Name) missing: $($missing -join ', ')" }
+          }
+
+      - name: Upload whisper-cli artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-cpp-win32-arm64-cpu
+          path: dist/whisper-cpp-win32-arm64-cpu.zip
+
+      - name: Upload whisper-server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-server-win32-arm64-cpu
+          path: dist/whisper-server-win32-arm64-cpu.zip
